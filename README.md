@@ -70,4 +70,8 @@ Key behavior:
 - avoids treating AArch64 ILP32 as legacy ARM OABI;
 - avoids old ARM-only UID/stat assumptions for this target;
 - adds an AArch64 ILP32 `target_stat` layout path;
-- keeps syscall argument and structure handling compatible with the smoke tests.
+
+### Usage
+* Apply the patch
+* Build with: `./configure --target-list=aarch64_ilp32-linux-user --disable-docs` then `ninja -C build qemu-aarch64_ilp32`
+* Run the output binary at: `qemu/build/qemu-aarch64_ilp32 `
