@@ -1,0 +1,232 @@
+From 8e3349d8587fa2a806f7268e3667b834641b444b Mon Sep 17 00:00:00 2001
+From: DownWithUp <downwithup@protonmail.com>
+Date: Sun, 17 May 2026 08:19:59 -0400
+Subject: [PATCH] ILP32 target support
+
+---
+ configs/targets/aarch64_ilp32-linux-user.mak | 10 ++++++
+ linux-user/aarch64/target_elf.h              | 16 ++++++---
+ linux-user/aarch64/target_mman.h             |  9 +++--
+ linux-user/qemu.h                            |  4 +--
+ linux-user/syscall.c                         |  6 ++--
+ linux-user/syscall_defs.h                    | 36 ++++++++++++++++++--
+ target/arm/cpu-param.h                       |  2 +-
+ 7 files changed, 67 insertions(+), 16 deletions(-)
+ create mode 100644 configs/targets/aarch64_ilp32-linux-user.mak
+
+diff --git a/configs/targets/aarch64_ilp32-linux-user.mak b/configs/targets/aarch64_ilp32-linux-user.mak
+new file mode 100644
+index 0000000..52fba4e
+--- /dev/null
++++ b/configs/targets/aarch64_ilp32-linux-user.mak
+@@ -0,0 +1,10 @@
++TARGET_ARCH=aarch64
++TARGET_BASE_ARCH=arm
++TARGET_XML_FILES= aarch64-core.xml aarch64-fpu.xml aarch64-pauth.xml aarch64-mte.xml aarch64-sme2.xml
++TARGET_HAS_BFLT=y
++CONFIG_SEMIHOSTING=y
++CONFIG_ARM_COMPATIBLE_SEMIHOSTING=y
++TARGET_SYSTBL_ABI=common,32,time32,stat64,renameat,rlimit,memfd_secret
++TARGET_SYSTBL=syscall_64.tbl
++TARGET_LONG_BITS=64
++TARGET_ABI32=y
+diff --git a/linux-user/aarch64/target_elf.h b/linux-user/aarch64/target_elf.h
+index 4cdeb64..f156244 100644
+--- a/linux-user/aarch64/target_elf.h
++++ b/linux-user/aarch64/target_elf.h
+@@ -11,7 +11,11 @@
+ #include "target_ptrace.h"
+ 
+ #define ELF_MACHINE             EM_AARCH64
+-#define ELF_CLASS               ELFCLASS64
++#ifdef TARGET_ABI32
++# define ELF_CLASS              ELFCLASS32
++#else
++# define ELF_CLASS              ELFCLASS64
++#endif
+ 
+ #define HAVE_ELF_HWCAP          1
+ #define HAVE_ELF_HWCAP2         1
+@@ -27,10 +31,12 @@ typedef struct target_elf_gregset_t {
+     struct target_user_pt_regs pt;
+ } target_elf_gregset_t;
+ 
+-#if TARGET_BIG_ENDIAN
+-# define VDSO_HEADER            "vdso-be.c.inc"
+-#else
+-# define VDSO_HEADER            "vdso-le.c.inc"
++#ifndef TARGET_ABI32
++# if TARGET_BIG_ENDIAN
++#  define VDSO_HEADER           "vdso-be.c.inc"
++# else
++#  define VDSO_HEADER           "vdso-le.c.inc"
++# endif
+ #endif
+ 
+ #endif
+diff --git a/linux-user/aarch64/target_mman.h b/linux-user/aarch64/target_mman.h
+index 69ec5d5..32df49a 100644
+--- a/linux-user/aarch64/target_mman.h
++++ b/linux-user/aarch64/target_mman.h
+@@ -4,6 +4,10 @@
+ #define TARGET_PROT_BTI         0x10
+ #define TARGET_PROT_MTE         0x20
+ 
++#ifdef TARGET_ABI32
++# define TASK_UNMAPPED_BASE     (1ull << 30)
++# define ELF_ET_DYN_BASE        TARGET_PAGE_ALIGN((1ull << 30) / 3 * 2)
++#else
+ /*
+  * arch/arm64/include/asm/processor.h:
+  *
+@@ -12,10 +16,11 @@
+  * DEFAULT_MAP_WINDOW_64  UL(1) << VA_BITS_MIN
+  * VA_BITS_MIN            48 (unless explicitly configured smaller)
+  */
+-#define TASK_UNMAPPED_BASE      (1ull << (48 - 2))
++# define TASK_UNMAPPED_BASE     (1ull << (48 - 2))
+ 
+ /* arch/arm64/include/asm/elf.h */
+-#define ELF_ET_DYN_BASE         TARGET_PAGE_ALIGN((1ull << 48) / 3 * 2)
++# define ELF_ET_DYN_BASE        TARGET_PAGE_ALIGN((1ull << 48) / 3 * 2)
++#endif
+ 
+ #include "../generic/target_mman.h"
+ 
+diff --git a/linux-user/qemu.h b/linux-user/qemu.h
+index 7f98fb2..8fc6b55 100644
+--- a/linux-user/qemu.h
++++ b/linux-user/qemu.h
+@@ -88,7 +88,7 @@ struct vm86_saved_state {
+ };
+ #endif
+ 
+-#if defined(TARGET_ARM) && defined(TARGET_ABI32)
++#if defined(TARGET_ARM) && defined(TARGET_ABI32) && !defined(TARGET_AARCH64)
+ /* FPU emulator */
+ #include "nwfpe/fpa11.h"
+ #endif
+@@ -100,7 +100,7 @@ struct emulated_sigtable {
+ 
+ struct TaskState {
+     pid_t ts_tid;     /* tid (or pid) of this task */
+-#ifdef TARGET_ARM
++#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+ # ifdef TARGET_ABI32
+     /* FPA state */
+     FPA11 fpa;
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index d3d9fff..16d1105 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -7269,7 +7269,7 @@ static inline abi_long copy_to_user_flock(abi_ulong target_flock_addr,
+ typedef abi_long from_flock64_fn(struct flock *fl, abi_ulong target_addr);
+ typedef abi_long to_flock64_fn(abi_ulong target_addr, const struct flock *fl);
+ 
+-#if defined(TARGET_ARM) && TARGET_ABI_BITS == 32
++#if defined(TARGET_ARM) && TARGET_ABI_BITS == 32 && !defined(TARGET_AARCH64)
+ struct target_oabi_flock64 {
+     abi_short l_type;
+     abi_short l_whence;
+@@ -7966,7 +7966,7 @@ static inline abi_long host_to_target_stat64(CPUArchState *cpu_env,
+                                              abi_ulong target_addr,
+                                              struct stat *host_st)
+ {
+-#if defined(TARGET_ARM) && defined(TARGET_ABI32)
++#if defined(TARGET_ARM) && defined(TARGET_ABI32) && !defined(TARGET_AARCH64)
+     if (cpu_env->eabi) {
+         struct target_eabi_stat64 *target_st;
+ 
+@@ -13022,7 +13022,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+         from_flock64_fn *copyfrom = copy_from_user_flock64;
+         to_flock64_fn *copyto = copy_to_user_flock64;
+ 
+-#ifdef TARGET_ARM
++#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+         if (!cpu_env->eabi) {
+             copyfrom = copy_from_user_oabi_flock64;
+             copyto = copy_to_user_oabi_flock64;
+diff --git a/linux-user/syscall_defs.h b/linux-user/syscall_defs.h
+index 5799769..eeb4d25 100644
+--- a/linux-user/syscall_defs.h
++++ b/linux-user/syscall_defs.h
+@@ -60,7 +60,8 @@
+ #define TARGET_IOC_TYPEBITS     8
+ 
+ #if (defined(TARGET_I386) && defined(TARGET_ABI32))                     \
+-    || (defined(TARGET_ARM) && defined(TARGET_ABI32))                   \
++    || (defined(TARGET_ARM) && defined(TARGET_ABI32)                    \
++        && !defined(TARGET_AARCH64))                                    \
+     || (defined(TARGET_SPARC) && defined(TARGET_ABI32))                 \
+     || defined(TARGET_M68K) || defined(TARGET_SH4)
+ /* 16 bit uid wrappers emulation */
+@@ -1236,7 +1237,8 @@ struct target_winsize {
+ #include "target_mman.h"
+ 
+ #if (defined(TARGET_I386) && defined(TARGET_ABI32))     \
+-    || (defined(TARGET_ARM) && defined(TARGET_ABI32))
++    || (defined(TARGET_ARM) && defined(TARGET_ABI32)    \
++        && !defined(TARGET_AARCH64))
+ #define TARGET_STAT_HAVE_NSEC
+ struct target_stat {
+     abi_ushort st_dev;
+@@ -1907,6 +1909,34 @@ struct target_stat {
+     abi_long       st_blocks;
+     abi_ulong  __unused[3];
+ };
++#elif defined(TARGET_AARCH64) && defined(TARGET_ABI32)
++#define TARGET_STAT_HAVE_NSEC
++struct target_stat {
++    abi_ulong  st_dev;
++    abi_ulong  __ilp32_pad1;
++    abi_ulong  st_ino;
++    abi_ulong  __ilp32_pad2;
++    abi_uint   st_mode;
++    abi_uint   st_nlink;
++    abi_uint   st_uid;
++    abi_uint   st_gid;
++    abi_ulong  st_rdev;
++    abi_ulong  __ilp32_pad3;
++    abi_ulong  __pad1;
++    abi_ulong  __ilp32_pad4;
++    abi_llong  st_size;
++    abi_int    st_blksize;
++    abi_int    __pad2;
++    abi_long   st_blocks;
++    abi_ulong  __ilp32_pad5;
++    abi_long   target_st_atime;
++    abi_ulong  target_st_atime_nsec;
++    abi_long   target_st_mtime;
++    abi_ulong  target_st_mtime_nsec;
++    abi_long   target_st_ctime;
++    abi_ulong  target_st_ctime_nsec;
++    abi_uint   __unused[2];
++} QEMU_PACKED;
+ #elif defined(TARGET_AARCH64)
+ #define TARGET_STAT_HAVE_NSEC
+ struct target_stat {
+@@ -2781,7 +2811,7 @@ struct target_open_how_ver0 {
+ #define RESOLVE_IN_ROOT         0x10
+ #endif
+ #if (defined(TARGET_I386) && defined(TARGET_ABI32)) || \
+-    (defined(TARGET_ARM) && defined(TARGET_ABI32)) || \
++    (defined(TARGET_ARM) && defined(TARGET_ABI32) && !defined(TARGET_AARCH64)) || \
+     defined(TARGET_M68K) || defined(TARGET_MICROBLAZE) || \
+     defined(TARGET_S390X)
+ #define TARGET_ARCH_WANT_SYS_OLD_MMAP
+diff --git a/target/arm/cpu-param.h b/target/arm/cpu-param.h
+index f67e7b3..dc649f3 100644
+--- a/target/arm/cpu-param.h
++++ b/target/arm/cpu-param.h
+@@ -8,7 +8,7 @@
+ #ifndef ARM_CPU_PARAM_H
+ #define ARM_CPU_PARAM_H
+ 
+-#ifdef TARGET_AARCH64
++#if defined(TARGET_AARCH64) && !defined(TARGET_ABI32)
+ # define TARGET_VIRT_ADDR_SPACE_BITS  52
+ #else
+ # define TARGET_VIRT_ADDR_SPACE_BITS  32
+-- 
+2.43.0
+
