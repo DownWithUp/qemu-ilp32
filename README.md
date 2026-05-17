@@ -72,6 +72,6 @@ Key behavior:
 - adds an AArch64 ILP32 `target_stat` layout path;
 
 ### Usage
-* Apply the patch
+* Apply the patch with `git -C ~/fresh_qemu/qemu am qemu-ilp32/qemu-aarch64-ilp32.patch`
 * Build with: `./configure --target-list=aarch64_ilp32-linux-user --disable-docs` then `ninja -C build qemu-aarch64_ilp32`
 * Run the output binary at: `qemu/build/qemu-aarch64_ilp32 `
